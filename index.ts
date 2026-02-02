@@ -2,15 +2,11 @@ import type { KeyValueAdapter } from "adminforth";
 import { createClient } from 'redis';
 import { AdapterOptions } from "./types.js";
 
-export default class RAMKeyValueAdapter implements KeyValueAdapter {
-  private data: Map<string, any>;
-
-  private memory: Map<string, any>;
+export default class RedisKeyValueAdapter implements KeyValueAdapter {
   private redis: ReturnType<typeof createClient>;
   options: AdapterOptions;
 
   constructor(options: AdapterOptions) {
-    this.memory = new Map();
     this.redis = createClient({ url: options.redisUrl });
 
     this.redis.on('error', (err) => console.error('Redis error', err));
@@ -25,29 +21,24 @@ export default class RAMKeyValueAdapter implements KeyValueAdapter {
 
  async set(key, value, expiresInSeconds?) {
     if (expiresInSeconds) {
-      await this.redis.set(key, value, { EX: expiresInSeconds });
+      await this.redis.set(key, value, { expiration: {type: 'EX', value: expiresInSeconds} });
     } else {
       await this.redis.set(key, value);
     }
   }
 
   async get(key) {
-    if (this.memory.has(key)) {
-      return this.memory.get(key);
-    }
 
     const redisValue = await this.redis.get(key);
     if (redisValue) {
-      const parsed = JSON.parse(redisValue);
-      this.memory.set(key, parsed);
-      return parsed;
+      const valueStr = typeof redisValue === 'string' ? redisValue : redisValue.toString();
+      return valueStr;
     }
 
     return null;
   }
 
   async delete(key) {
-    this.memory.delete(key);
     await this.redis.del(key);
   }
 
