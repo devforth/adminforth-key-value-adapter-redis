@@ -42,4 +42,36 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
     await this.redis.del(key);
   }
 
+  async listByPrefix(prefix: string, limit: number): Promise<Record<string, string>> {
+    if (limit <= 0) {
+      return {};
+    }
+
+    const keys: string[] = [];
+
+    for await (const key of this.redis.scanIterator({ MATCH: `${prefix}*`, COUNT: limit })) {
+      keys.push(typeof key === 'string' ? key : key.toString());
+
+      if (keys.length >= limit) {
+        break;
+      }
+    }
+
+    if (!keys.length) {
+      return {};
+    }
+
+    const values = await this.redis.mGet(keys);
+
+    return keys.reduce<Record<string, string>>((result, key, index) => {
+      const value = values[index];
+
+      if (value !== null) {
+        result[key] = typeof value === 'string' ? value : value.toString();
+      }
+
+      return result;
+    }, {});
+  }
+
   }

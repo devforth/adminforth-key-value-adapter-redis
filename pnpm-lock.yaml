@@ -19,8 +19,8 @@ importers:
         version: 5.9.3
     devDependencies:
       adminforth:
-        specifier: ^3.0.1
-        version: 3.0.1(@types/node@25.3.3)
+        specifier: ^3.2.0
+        version: 3.2.0(@types/node@25.3.3)
       semantic-release:
         specifier: ^24.2.1
         version: 24.2.9(typescript@5.9.3)
@@ -427,15 +427,15 @@ packages:
     resolution: {integrity: sha512-PYAthTa2m2VKxuvSD3DPC/Gy+U+sOA1LAuT8mkmRuvw+NACSaeXEQ+NHcVF7rONl6qcaxV3Uuemwawk+7+SJLw==}
     engines: {node: '>= 0.6'}
 
-  adminforth@3.0.1:
-    resolution: {integrity: sha512-pSgPBDyo+tLY4wnRPaZ/HG7oINv6LR3VfgNwnhNZPFJvEE1DgQqb3+nknKuEkx3bSeJEOXoBd8OvNA98QzzRVA==}
+  adminforth@3.2.0:
+    resolution: {integrity: sha512-HooaW6m2b6NLsw/t1gMT0oJiKanmziLsubU6pzTUsI7VI7DNyEXf69Tms5OatMR5fZ8eH5a0II9sak+Mhxu+ug==}
     hasBin: true
     peerDependencies:
-      '@adminforth/connector-clickhouse': ^1.0.1
-      '@adminforth/connector-mongo': ^1.0.0
-      '@adminforth/connector-mysql': ^1.0.0
-      '@adminforth/connector-postgres': ^1.0.0
-      '@adminforth/connector-sqlite': ^1.0.0
+      '@adminforth/connector-clickhouse': ^1.0.2
+      '@adminforth/connector-mongo': ^1.0.1
+      '@adminforth/connector-mysql': ^1.0.1
+      '@adminforth/connector-postgres': ^1.0.1
+      '@adminforth/connector-sqlite': ^1.0.1
     peerDependenciesMeta:
       '@adminforth/connector-clickhouse':
         optional: true
@@ -2802,7 +2802,7 @@ snapshots:
       mime-types: 2.1.35
       negotiator: 0.6.3
 
-  adminforth@3.0.1(@types/node@25.3.3):
+  adminforth@3.2.0(@types/node@25.3.3):
     dependencies:
       '@babel/parser': 7.29.0
       '@faker-js/faker': 9.9.0
