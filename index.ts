@@ -42,15 +42,23 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
     await this.redis.del(key);
   }
 
-  async listByPrefix(prefix: string, limit: number): Promise<Record<string, string>> {
+  async listByPrefix(prefix: string, limit: number): Promise<Record<string, string>[]> {
     if (limit <= 0) {
-      return {};
+      return [];
     }
 
     const keys: string[] = [];
 
-    for await (const key of this.redis.scanIterator({ MATCH: `${prefix}*`, COUNT: limit })) {
-      keys.push(typeof key === 'string' ? key : key.toString());
+    for await (const scanChunk of this.redis.scanIterator({ MATCH: `${prefix}*`, COUNT: limit })) {
+      const chunk = Array.isArray(scanChunk) ? scanChunk : [scanChunk];
+
+      for (const key of chunk) {
+        keys.push(typeof key === 'string' ? key : key.toString());
+
+        if (keys.length >= limit) {
+          break;
+        }
+      }
 
       if (keys.length >= limit) {
         break;
@@ -58,20 +66,20 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
     }
 
     if (!keys.length) {
-      return {};
+      return [];
     }
 
     const values = await this.redis.mGet(keys);
 
-    return keys.reduce<Record<string, string>>((result, key, index) => {
+    return keys.reduce<Record<string, string>[]>((result, key, index) => {
       const value = values[index];
 
       if (value !== null) {
-        result[key] = typeof value === 'string' ? value : value.toString();
+        result.push({ [key]: typeof value === 'string' ? value : value.toString() });
       }
 
       return result;
-    }, {});
+    }, []);
   }
 
   }
