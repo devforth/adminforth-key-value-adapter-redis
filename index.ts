@@ -85,9 +85,26 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
     return limitedKeys.reduce<Record<string, string>[]>((result, key, index) => {
       const value = values[index];
 
-      if (value !== null) {
-        result.push({ [key]: typeof value === 'string' ? value : value.toString() });
+      if (value === null) {
+        return result;
       }
+
+      let resultKey = key;
+      if (collection) {
+        // only keep keys that belong to the requested collection
+        if (!resultKey.startsWith(`${collection}:`)) {
+          return result;
+        }
+        // return keys without the collection prefix
+        resultKey = resultKey.replace(`${collection}:`, '');
+      }
+
+      // return the key only if it starts with the requested prefix
+      if (!resultKey.startsWith(prefix)) {
+        return result;
+      }
+
+      result.push({ [resultKey]: typeof value === 'string' ? value : value.toString() });
 
       return result;
     }, []);
