@@ -3,6 +3,11 @@ import { createClient } from 'redis';
 import { afLogger } from "adminforth";
 import { AdapterOptions } from "./types.js";
 
+// Reserved namespace for the adapter's own bookkeeping keys (lex indexes and
+// backfill markers). These must never collide with user data and are excluded
+// from any backfill scan.
+const RESERVED_PREFIX = '__afkv:';
+
 export default class RedisKeyValueAdapter implements KeyValueAdapter {
   private redis: ReturnType<typeof createClient>;
   options: AdapterOptions;
@@ -27,13 +32,33 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
     return key;
   }
 
- async set(key, value, expiresInSeconds?, collection?: string) {
-    const actualKey = this.getActualKey(key, collection);
-    if (expiresInSeconds) {
-      await this.redis.set(actualKey, value, { expiration: {type: 'EX', value: expiresInSeconds} });
-    } else {
-      await this.redis.set(actualKey, value);
+  private indexKey(collection?: string): string {
+    return collection ? `${RESERVED_PREFIX}idx:${collection}` : `${RESERVED_PREFIX}idx`;
+  }
+
+  private lexPrefixRange(prefix: string): { min: string; max: string } {
+    if (prefix === '') {
+      return { min: '-', max: '+' };
     }
+    const lastCode = prefix.charCodeAt(prefix.length - 1);
+    const upper = `${prefix.slice(0, -1)}${String.fromCharCode(lastCode + 1)}`;
+    // `[` = inclusive, `(` = exclusive.
+    return { min: `[${prefix}`, max: `(${upper}` };
+  }
+
+  async set(key, value, expiresInSeconds?, collection?: string) {
+    const actualKey = this.getActualKey(key, collection);
+    const indexKey = this.indexKey(collection);
+
+    const multi = this.redis.multi();
+    if (expiresInSeconds) {
+      multi.set(actualKey, value, { expiration: { type: 'EX', value: expiresInSeconds } });
+    } else {
+      multi.set(actualKey, value);
+    }
+    // Keep the lex index in sync with the write.
+    multi.zAdd(indexKey, { score: 0, value: key });
+    await multi.exec();
   }
 
   async get(key, collection?: string) {
@@ -49,65 +74,60 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
 
   async delete(key, collection?: string) {
     const actualKey = this.getActualKey(key, collection);
-    await this.redis.del(actualKey);
+    const indexKey = this.indexKey(collection);
+
+    await this.redis.multi()
+      .del(actualKey)
+      .zRem(indexKey, key)
+      .exec();
   }
 
   async listByPrefix(prefix: string, limit?: number, collection?: string): Promise<Record<string, string>[]> {
-    afLogger.warn('listByPrefix is not optimized for large datasets for Redis. Will be optimized in future versions. Consider using a different adapter for large datasets.');
     if (typeof limit === 'number' && limit <= 0) {
       return [];
     }
+    const indexKey = this.indexKey(collection);
+    const { min, max } = this.lexPrefixRange(prefix);
 
-    const actualPrefix = this.getActualKey(prefix, collection);
-    const keys: string[] = [];
+    // ZRANGEBYLEX returns members already sorted ASC, so ordering is
+    // deterministic (e.g. ISO date keys come out in date order) and the limit
+    // is applied server-side.
+    const rawMembers = await this.redis.zRangeByLex(
+      indexKey,
+      min,
+      max,
+      typeof limit === 'number' ? { LIMIT: { offset: 0, count: limit } } : undefined,
+    );
 
-    for await (const scanChunk of this.redis.scanIterator({ MATCH: `${actualPrefix}*`, COUNT: 100 })) {
-      const chunk = Array.isArray(scanChunk) ? scanChunk : [scanChunk];
-
-      for (const key of chunk) {
-        keys.push(typeof key === 'string' ? key : key.toString());
-      }
-    }
-
-    if (!keys.length) {
+    if (!rawMembers.length) {
       return [];
     }
 
-    // Redis SCAN returns keys in arbitrary order, so sort ASC to guarantee
-    // deterministic ordering (e.g. ISO date keys come out in date order)
-    // before applying the limit.
-    keys.sort();
+    const members = rawMembers.map((member) => typeof member === 'string' ? member : member.toString());
 
-    const limitedKeys = typeof limit === 'number' ? keys.slice(0, limit) : keys;
+    const actualKeys = members.map((member) => this.getActualKey(member, collection));
+    const values = await this.redis.mGet(actualKeys);
 
-    const values = await this.redis.mGet(limitedKeys);
-
-    return limitedKeys.reduce<Record<string, string>[]>((result, key, index) => {
+    const staleMembers: string[] = [];
+    const result = members.reduce<Record<string, string>[]>((acc, member, index) => {
       const value = values[index];
 
       if (value === null) {
-        return result;
+        // The data key expired (TTL) but its index entry lingered; clean it up.
+        staleMembers.push(member);
+        return acc;
       }
 
-      let resultKey = key;
-      if (collection) {
-        // only keep keys that belong to the requested collection
-        if (!resultKey.startsWith(`${collection}:`)) {
-          return result;
-        }
-        // return keys without the collection prefix
-        resultKey = resultKey.replace(`${collection}:`, '');
-      }
-
-      // return the key only if it starts with the requested prefix
-      if (!resultKey.startsWith(prefix)) {
-        return result;
-      }
-
-      result.push({ [resultKey]: typeof value === 'string' ? value : value.toString() });
-
-      return result;
+      acc.push({ [member]: typeof value === 'string' ? value : value.toString() });
+      return acc;
     }, []);
+
+    if (staleMembers.length) {
+      // Best-effort lazy cleanup; failures here must not affect the response.
+      this.redis.zRem(indexKey, staleMembers).catch((err) => afLogger.error(`Failed to prune stale index members: ${err}`));
+    }
+
+    return result;
   }
 
 }
