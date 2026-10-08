@@ -8,7 +8,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "keywords": [],
   "author": "DevForth (https://devforth.io)",
