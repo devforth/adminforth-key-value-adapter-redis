@@ -7,6 +7,7 @@ import { AdapterOptions } from "./types.js";
 // backfill markers). These must never collide with user data and are excluded
 // from any backfill scan.
 const RESERVED_PREFIX = '__afkv:';
+const LIST_PAGE_SIZE = 500;
 
 export default class RedisKeyValueAdapter implements KeyValueAdapter {
   private redis: ReturnType<typeof createClient>;
@@ -83,48 +84,57 @@ export default class RedisKeyValueAdapter implements KeyValueAdapter {
   }
 
   async listByPrefix(prefix: string, limit?: number, collection?: string): Promise<Record<string, string>[]> {
-    if (typeof limit === 'number' && limit <= 0) {
+    // rows are whole: COUNT is an error unless it is an integer, and COUNT 0 returns nothing silently
+    const rowLimit = limit === undefined ? Infinity : Math.floor(limit);
+    if (rowLimit < 1) {
       return [];
     }
     const indexKey = this.indexKey(collection);
-    const { min, max } = this.lexPrefixRange(prefix);
+    const { min: firstMin, max } = this.lexPrefixRange(prefix);
+    let min = firstMin;
+    let cursor: string | undefined;
+    let pageSize = Math.min(rowLimit, LIST_PAGE_SIZE);
+    const result: Record<string, string>[] = [];
 
-    // ZRANGEBYLEX returns members already sorted ASC, so ordering is
-    // deterministic (e.g. ISO date keys come out in date order) and the limit
-    // is applied server-side.
-    const rawMembers = await this.redis.zRangeByLex(
-      indexKey,
-      min,
-      max,
-      typeof limit === 'number' ? { LIMIT: { offset: 0, count: limit } } : undefined,
-    );
+    // Expired data keys leave index members behind. Continue until enough live
+    // rows are found or the lex range is exhausted: a short answer would be
+    // indistinguishable from an exhausted prefix for the caller.
+    while (result.length < rowLimit) {
+      const rawMembers = await this.redis.zRangeByLex(
+        indexKey,
+        min,
+        max,
+        { LIMIT: { offset: 0, count: pageSize } },
+      );
+      if (!rawMembers.length) break;
 
-    if (!rawMembers.length) {
-      return [];
-    }
-
-    const members = rawMembers.map((member) => typeof member === 'string' ? member : member.toString());
-
-    const actualKeys = members.map((member) => this.getActualKey(member, collection));
-    const values = await this.redis.mGet(actualKeys);
-
-    const staleMembers: string[] = [];
-    const result = members.reduce<Record<string, string>[]>((acc, member, index) => {
-      const value = values[index];
-
-      if (value === null) {
-        // The data key expired (TTL) but its index entry lingered; clean it up.
-        staleMembers.push(member);
-        return acc;
+      const members = rawMembers.map((member) => typeof member === 'string' ? member : member.toString());
+      const last = members[members.length - 1];
+      // ZRANGEBYLEX only orders members of equal score, and a member whose bytes we cannot reproduce
+      // is never excluded by the cursor built from it: both repeat the page, so stop instead of spinning
+      if (cursor !== undefined && Buffer.compare(Buffer.from(last), Buffer.from(cursor)) <= 0) {
+        break;
+      }
+      cursor = last;
+      const values = await this.redis.mGet(members.map((member) => this.getActualKey(member, collection)));
+      const staleMembers: string[] = [];
+      for (let index = 0; index < members.length; index++) {
+        const value = values[index];
+        if (value === null) {
+          staleMembers.push(members[index]);
+        } else if (result.length < rowLimit) {
+          result.push({ [members[index]]: typeof value === 'string' ? value : value.toString() });
+        }
       }
 
-      acc.push({ [member]: typeof value === 'string' ? value : value.toString() });
-      return acc;
-    }, []);
-
-    if (staleMembers.length) {
-      // Best-effort lazy cleanup; failures here must not affect the response.
-      this.redis.zRem(indexKey, staleMembers).catch((err) => afLogger.error(`Failed to prune stale index members: ${err}`));
+      // An exclusive lex cursor remains valid after stale members are removed.
+      min = `(${last}`;
+      if (staleMembers.length) {
+        // awaited so the prune is done when the call resolves and the next one is cheap; a failure is logged, not raised
+        await this.redis.zRem(indexKey, staleMembers).catch((err) => afLogger.error(`Failed to prune stale index members: ${err}`));
+      }
+      if (members.length < pageSize) break;
+      pageSize = LIST_PAGE_SIZE;
     }
 
     return result;
