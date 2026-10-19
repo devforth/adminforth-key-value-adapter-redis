@@ -23,6 +23,7 @@ steps:
     commands:
       - . /woodpecker/deploy.vault.env
       - pnpm install
+      - pnpm test
       - /bin/bash ./.woodpecker/buildRelease.sh
       - npm audit signatures
 
