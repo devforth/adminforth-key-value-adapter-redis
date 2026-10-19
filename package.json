@@ -15,7 +15,7 @@
   "license": "MIT",
   "description": "AdminForth key-value adapter backed by Redis.",
   "devDependencies": {
-    "adminforth": "^3.2.4",
+    "adminforth": "^4.7.3",
     "semantic-release": "^24.2.1",
     "semantic-release-slack-bot": "^4.0.2"
   },
